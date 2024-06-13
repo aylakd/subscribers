@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Communitrics Data Fetcher</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        table, th, td {
+            border: 1px solid black;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        #buttons {
+            margin-bottom: 20px;
+        }
+        #profileSection {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        #profilePicture {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            margin-right: 20px;
+        }
+        #profileName {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        #subscriberCount {
+            font-size: 16px;
+        }
+        canvas {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Communitrics Data Fetcher</h1>
+<form id="userForm">
+    <label for="userId">Enter User ID:</label>
+    <input type="text" id="userId" name="userId" required>
+</form>
+
+<div id="profileSection" style="display:none;">
+    <img id="profilePicture" src="" alt="Profile Picture">
+    <div>
+        <div id="profileName"></div>
+        <div id="subscriberCount">Subscribers: <span id="subscriberCountValue"></span></div>
+    </div>
+</div>
+
+<div id="headerMessage" style="display:none;">
+    <p><strong>Attention:</strong> The subscriber counts for this channel have been confirmed but may be inaccurate due to manual updates.</p>
+</div>
+
+<div id="buttons" style="display:none;">
+    <button id="downloadEstimateCsv">Download Estimates as CSV</button>
+    <button id="downloadCsv">Download Data as CSV</button>
+</div>
+
+<canvas id="subscriberChart" width="800" height="400"></canvas>
+
+<h2>Linear Estimates</h2>
+<table id="estimateTable">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Subs</th>
+            <th>Daily Gain/Loss</th>
+        </tr>
+    </thead>
+    <tbody>
+    </tbody>
+</table>
+
+<h2>Original Data</h2>
+<table id="dataTable">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Time</th>
+            <th>Previous Subscriber Count</th>
+        </tr>
+    </thead>
+    <tbody>
+    </tbody>
+</table>
+
+<script>
+    let subscriberChart;
+
+    async function fetchData(apiUrl) {
+        try {
+            const response = await fetch(apiUrl);
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            const data = await response.json();
+            const originalData = processOriginalData(data.data);
+            const estimates = calculateDailyEstimates(originalData);
+            populateProfile(data.channelDetails);
+            populateHeader(data.channelDetails.id);
+            populateTable('estimateTable', estimates, true);
+            populateTable('dataTable', originalData);
+            updateSubscriberChart(estimates);
+        } catch (error) {
+            console.error('There was a problem with the fetch operation:', error);
+        }
+    }
+
+    function populateProfile(channelDetails) {
+        document.getElementById('profilePicture').src = channelDetails.profilePicture;
+        document.getElementById('profileName').textContent = channelDetails.name;
+        document.getElementById('subscriberCountValue').textContent = channelDetails.linearEstSubscriberCount;
+        document.getElementById('profileSection').style.display = 'flex';
+        document.getElementById('buttons').style.display = 'block';
+    }
+
+    function populateHeader(userId) {
+        if (userId === 'UCX6OQ3DkcsbYNE6H8uQQuVA' || userId === 'UC-lHJZR3Gqxm24_Vd_AJ5Yw') {
+            document.getElementById('headerMessage').style.display = 'block';
+        } else {
+            document.getElementById('headerMessage').style.display = 'none';
+        }
+    }
+
+    function processOriginalData(data) {
+        return data.map(entry => {
+            const dateTime = new Date(entry.last_updated);
+            const date = dateTime.toISOString().split('T')[0];
+            const time = dateTime.toISOString().split('T')[1].split('Z')[0];
+            return {
+                date,
+                time,
+                previous_sub_count: entry.previous_sub_count
+            };
+        });
+    }
+
+    function calculateDailyEstimates(data) {
+        const estimates = [];
+        const endOfDay = '23:59:59.99Z';
+        const firstDate = new Date(data[0].date);
+        const lastDate = new Date(data[data.length - 1].date);
+
+        for (let d = new Date(firstDate); d <= lastDate; d.setDate(d.getDate() + 1)) {
+            const dateString = d.toISOString().split('T')[0];
+            const targetTime = new Date(`${dateString}T${endOfDay}`).getTime();
+            
+            let before, after;
+            for (let i = 1; i < data.length; i++) {
+                const prevTime = new Date(`${data[i - 1].date}T${data[i - 1].time}Z`).getTime();
+                const currTime = new Date(`${data[i].date}T${data[i].time}Z`).getTime();
+
+                if (targetTime >= prevTime && targetTime <= currTime) {
+                    before = data[i - 1];
+                    after = data[i];
+                    break;
+                }
+            }
+
+            if (before && after) {
+                const prevTime = new Date(`${before.date}T${before.time}Z`).getTime();
+                const currTime = new Date(`${after.date}T${after.time}Z`).getTime();
+                const slope = (after.previous_sub_count - before.previous_sub_count) / (currTime - prevTime);
+                const estimatedCount = Math.floor(before.previous_sub_count + slope * (targetTime - prevTime));
+                const dailyGain = estimates.length > 0 ? estimatedCount - estimates[estimates.length - 1].estimated_count : '-';
+                estimates.push({
+                    date: dateString,
+                    estimated_count: estimatedCount,
+                    daily_gain: estimates.length > 0 ? dailyGain : '-'
+                });
+            }
+        }
+        return estimates;
+    }
+
+    function populateTable(tableId, data, isEstimate = false) {
+    const tableBody = document.getElementById(tableId).getElementsByTagName('tbody')[0];
+    tableBody.innerHTML = '';
+    data.forEach(entry => {
+        const row = tableBody.insertRow();
+        const dateCell = row.insertCell(0);
+        dateCell.textContent = entry.date;
+
+        if (isEstimate) {
+            const estimateCell = row.insertCell(1);
+            const gainCell = row.insertCell(2);
+            estimateCell.textContent = entry.estimated_count.toLocaleString(); // Add commas to estimated count
+            gainCell.textContent = entry.daily_gain !== '-' ? (entry.daily_gain >= 0 ? `+${entry.daily_gain}` : entry.daily_gain) : '-';
+        } else {
+            const timeCell = row.insertCell(1);
+            const countCell = row.insertCell(2);
+            timeCell.textContent = entry.time;
+            countCell.textContent = entry.previous_sub_count.toLocaleString(); // Add commas to previous sub count
+        }
+    });
+}
+
+
+    function updateSubscriberChart(data) {
+        const dates = data.map(entry => entry.date);
+        const counts = data.map(entry => entry.estimated_count);
+
+        if (subscriberChart) {
+            subscriberChart.destroy();
+        }
+
+        const ctx = document.getElementById('subscriberChart').getContext('2d');
+        subscriberChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: dates,
+                datasets: [{
+                    label: 'Subscriber Count Over Time',
+                    data: counts,
+                    borderColor: 'blue',
+                    fill: false,
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                scales: {
+                    y: {
+                        beginAtZero: false
+                    }
+                }
+            }
+        });
+    }
+
+    document.getElementById('downloadEstimateCsv').addEventListener('click', function() {
+        downloadTableAsCsv('estimateTable', 'estimates.csv');
+    });
+
+    document.getElementById('downloadCsv').addEventListener('click', function() {
+        downloadTableAsCsv('dataTable', 'data.csv');
+    });
+
+    function downloadTableAsCsv(tableId, filename) {
+        const table = document.getElementById(tableId);
+        const rows = Array.from(table.rows);
+        const csvContent = rows.map(row => {
+            const cells = Array.from(row.cells);
+            return cells.map(cell => cell.textContent).join(',');
+        }).join('\n');
+        downloadCsv(csvContent, filename);
+    }
+
+    function downloadCsv(csvContent, filename) {
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    // Fetch data automatically after entering user ID
+    document.getElementById('userId').addEventListener('input', async function(event) {
+        const userId = event.target.value;
+        if (userId) {
+            const apiUrl = `https://api.communitrics.com/${userId}`;
+            await fetchData(apiUrl);
+
+            setInterval(async function() {
+                await fetchData(apiUrl);
+            }, 60000); // Fetch every minute
+        }
+    });
+</script>
+
+</body>
+</html>
